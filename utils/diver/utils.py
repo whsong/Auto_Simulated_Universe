@@ -174,7 +174,7 @@ class UniverseUtils:
         d.text(position, hotkey, font=font, fill=color)
         return np.array(image)
 
-    def press(self, c, t=0):
+    def press(self, c, t: float = 0):
         if c not in "3r":
             log.debug(f"按下按钮 {c}，等待 {t} 秒后释放")
         if c=='e' and self.allow_e==0:
@@ -1628,6 +1628,7 @@ class UniverseUtils:
                 return
 
     def get_text_position(self, clean=0):
+        """return the center position of pieces of texts in the screen, as a list of tuples (x,y)"""
         if self.event_mask is None:
             self.event_mask = (cv.imread('imgs/divergent/event_mask.jpg', cv.IMREAD_GRAYSCALE) > 70)[:497]
             self.event_mask_clean = (cv.imread('imgs/divergent/event_mask_clean.jpg', cv.IMREAD_GRAYSCALE) > 70)[:497]

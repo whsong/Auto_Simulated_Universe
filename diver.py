@@ -691,11 +691,13 @@ class DivergentUniverse(UniverseUtils):
 
         log.info(f"align_event: {event_text}, key: {key}")
 
+        # Calculate how much the character needs to move horizontally based on the position of the event text  -ws
         if event_text:
             if abs(950-event_text) >= 50:
                 self.press(key,0.2)
             event_text_after = self.find_event_text()
             if event_text_after:
+                # sub: displacement of the event text after moving attempt  -ws
                 sub = event_text - event_text_after
                 if key == 'a':
                     sub = -sub
@@ -706,7 +708,7 @@ class DivergentUniverse(UniverseUtils):
 
             if sub < 60:
                 sub = 100
-
+            # sub: now it means the calculated # of small steps to move, should use a new name instead -ws
             if sub < 400:
                 sub = int((event_text_after - 950) / sub)
                 sub = min(3, max(-3, int(sub)))
@@ -715,13 +717,13 @@ class DivergentUniverse(UniverseUtils):
 
             if abs(950-event_text) < 50:
                 sub = 0
-
+            # reduce the press time from 0.2s to 0.10s to compensate for the delay on my computer -ws
             for _ in range(sub):
-                self.press('d',0.2)
+                self.press('d',0.10)
                 time.sleep(0.1)
 
             for _ in range(-sub):
-                self.press('a',0.2)
+                self.press('a',0.10)
                 time.sleep(0.1)
 
             if click:
@@ -731,7 +733,7 @@ class DivergentUniverse(UniverseUtils):
             self.forward_until(['事件','奖励','遭遇','交易'], timeout=2.5, moving=0, chaos=1)
 
         else:
-            if deep < 3:
+            if deep < 4: # increase to 4 from 3, add one more attempt -ws
                 self.press('w',[0,0.3,0.5][deep])
                 self.align_event(key, deep+1)
             return
@@ -840,7 +842,10 @@ class DivergentUniverse(UniverseUtils):
         
         log.info(f"floor:{self.floor}, state:{self.area_state}, area:{area_now}, text:{self.area_text}")
 
-        if area_now in ['事件', '奖励', '遭遇']:
+        if area_now in ['事件', '奖励', '遭遇', '战斗']:
+        # if area_now in ['事件', '奖励', '遭遇']:
+            # !!! Pathfinding logic in event areas, where the most lost and stuck happens. -ws
+            # In some weeks, the battle level may also show as event card, instead of enemy in the field. But later is not the case now.
             # 如果存在大黑塔,还是切过来,毕竟这些事件都可能入战
             if self.da_hei_ta and self.allow_e and not self.da_hei_ta_effecting:
                 self.skill()
@@ -851,6 +856,7 @@ class DivergentUniverse(UniverseUtils):
             # 基本思想是前进,监视中间区域出现汉字,确定事件数量,分为单和双逻辑进行寻路
             # 如果是单事件,一直前进,然后寻找F
             # 如果是双事件,优先右侧事件,然后再左侧事件
+            # In certain circumstances, theres may also be three events. -ws
 
 
             if self.area_state==0:
@@ -862,25 +868,34 @@ class DivergentUniverse(UniverseUtils):
 
                 while time.time() - tm < 15:
                     self.get_screen()
-                    if self.get_text_position():
+                    res = self.get_text_position()
+                    if res:
                         keyops.keyUp('w')
-                        # self.press('s', 0.25)
+                        # In some cases, need to go back a little bit to avoid missing the text. But there is also a map with downstairs where turning back would occlude the text. -ws
+                        # self.press('s', 0.05) 
+                        log.info(f"初步找到 文字 at {res}，回头一下")
                         time.sleep(0.5)
                         self.get_screen()
+                        # res and total_events are all text_positions, one tmp one official. That is really bad naming. -ws
                         total_events = self.get_text_position(1)
                         if len(total_events) and total_events[0][0] < 1600:
                             # 有时候会锁定到右边的状态效果那个字
+                            log.info(f"再次使用 clean mask 找到文字，而且不是右侧的状态效果。具体位置 {total_events}")
                             break
                         else:
                             keyops.keyDown('w')
                             time.sleep(1)
                             tm += 1.5
+                            if len(total_events) ==0:
+                                log.info(f"再次使用 clean mask 未找到文字。")
+                            else:
+                                log.info(f"再次使用 clean mask 找到文字，但是是右侧>1600的状态效果。 具体位置 {res}")
 
                 keyops.keyUp('w')
                 if total_events is None:
                     self.close_and_exit()
                     return 1
-                log.info(f"total_events step: {total_events}")
+                # log.info(f"total_events step: {total_events}")
                 
                 if not total_events or not (933 <= total_events[0][0] <= 972):
                     win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 0, int(-100 * self.multi * self.scale))
@@ -982,6 +997,8 @@ class DivergentUniverse(UniverseUtils):
                 self.portal_opening_days(static=1)
 
         elif area_now == '战斗':
+            # 最新的地图中，战斗类型的区域也可能出现事件框，而不是地图放怪的形式。
+
             # 如果大黑塔秘技使能,先使用秘技,前面应该已经切换到了大黑塔
             if self.da_hei_ta and self.allow_e and not self.da_hei_ta_effecting:
                 self.skill()
