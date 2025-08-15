@@ -57,7 +57,8 @@ class DivergentUniverse(UniverseUtils):
         self.bless_prior = defaultdict(int)
         self.team_member = {}
         self.ocr_time_list = [0.5]
-        self.fail_tm = 0
+        self.fail_tm = 0.0 # the timestamp of last failure in seconds. only for close_and_exit() -ws
+        self.last_fail_floor = 0
         self.last_action_time = 0
         self.total_empty_saves = 1
 
@@ -85,8 +86,10 @@ class DivergentUniverse(UniverseUtils):
         set_debug(debug > 0)
 
     def route(self):
+        """ The normal entrance of the program."""
         self.threshold = 0.97
         self.is_get_team = True #启动后重置状态
+        # look for the game window
         while True:
             if self._stop:
                 break
@@ -114,6 +117,7 @@ class DivergentUniverse(UniverseUtils):
         log.info("停止运行")
 
     def loop(self):
+        """ The main loop of the program."""
         self.ts.forward(self.get_screen())
         # self.ts.find_with_box()
         # exit()
@@ -156,7 +160,7 @@ class DivergentUniverse(UniverseUtils):
             time.sleep(2)
             self.press('esc')
             self._stop = True
-        
+
     def do_action(self, action) -> int:
         if type(action) == str:
             return getattr(self, action)()
@@ -182,7 +186,7 @@ class DivergentUniverse(UniverseUtils):
             self.press(action["press"], action["time"] if "time" in action else 0)
             return 1
         return 0
-    
+
     def load_actions(self, json_path):
         res = defaultdict(list)
         with open(json_path, "r", encoding="utf-8") as f:
@@ -208,7 +212,7 @@ class DivergentUniverse(UniverseUtils):
                     self.action_history = self.action_history[-10:]
                     return i['name']
         return ''
-    
+
     def select_difficulty(self):
         time.sleep(0.5)
         self.click_position([125, 175+int((self.diffi-1)*(605-175)/4)])
@@ -235,12 +239,15 @@ class DivergentUniverse(UniverseUtils):
 
     def merge_text(self, text, char=1):
         return self.clean_text(''.join([i['raw_text'] for i in self.ts.sort_text(text)]), char)
-    
+
     def init_floor(self):
-        self.portal_cnt = 0 
+        self.portal_cnt = 0
+        # area_state = 0 for area initial state, 1 meaning 1 event solved, 2 for 2 events solved.
+        # But with update an area may have three events, so we can use 0 for initial, 1 for in progress, 2 for all solved, or other interpretations.
         self.area_state = 0
-        self.event_solved = 0
+        self.event_solved = False
         self.bless_solved = 0
+        # seems unused
         self.fail_cnt = 0
         self.now_event = ''
         if hasattr(self, 'keys'):
@@ -269,7 +276,12 @@ class DivergentUniverse(UniverseUtils):
         if self.total_empty_saves == 1:
             self.total_empty_saves = empty_saves
 
-    def close_and_exit(self, click=True):
+    def close_and_exit(self, click: bool = True):
+        """Press 'ESC' to call out the menu, and click '结束并结算/End and Finalize' if click is True.
+        If not click, it will trigger '暂离/Leave for Now'(defined in default actions), to reposition and retry after a setback.
+        Consecutive fruitless Leaves become a Failure, a.k.a. a premature End (abortion) of this round, or a program exit if in debug mode.
+        """
+        # TODO: It is correct but somewhat obscure. Probably can better clarify the states (completed, retry, and failed) and split the logic from actions in the cost of more lines of code.
         self.press('esc')
         if self.debug and self.floor < 13:
             with open('test.txt', 'a') as f:
@@ -277,16 +289,42 @@ class DivergentUniverse(UniverseUtils):
                 formatted_time = time.strftime(format_string, time.localtime())
                 f.write(formatted_time + '\n')
         time.sleep(2.5)
+        made_progress = self.event_solved
         self.init_floor()
         if not click:
-            if time.time() - self.fail_tm < 90:
-                click = True
-                self.fail_tm = 0
-                if self.debug:
-                    exit()
+            log.info(f"暂离。time since last failure: {time.time() - self.fail_tm:.2f} seconds. New events solved:{made_progress}.")
+            # Leave transforms to Failure.
+            # original logic: the first Leave time is recorded,
+            # the second fast (thus consecutive) Leave (retry once and fail) transforms to Failure.
+            # if time.time() - self.fail_tm < 90:
+            #     click = True
+            #     self.fail_tm = 0.0
+            #     if self.debug:
+            #         exit()
+            # else:
+            #     self.fail_tm = time.time()
+            
+            # After DU update, the program often aborted in event area but can pass the level if try it again.
+            # New logic: More tries for event area. Attempts with events solved resets the counter.
+            # the second attempt (retry once and fail) without solving new events transforms to Failure.
+            if made_progress or self.floor != self.last_fail_floor:
+                # Reset the counter if setback but made progress in event area.
+                # TODO: There is a caveat that a successful try won't trigger the Leave and reset the timer, but it should.
+                # To avoid detecting success, we can instead reset the timer for every first attempt for a new area.
+                self.fail_tm = 0.0
+                self.last_fail_floor = self.floor
             else:
-                self.fail_tm = time.time()
+                if time.time() - self.fail_tm < 90:
+                    click = True
+                    self.fail_tm = 0.0
+                    if self.debug:
+                        exit()
+                else:
+                    self.fail_tm = time.time()
+
         if click:
+            # For both completed and failed.
+            log.info("结束并结算。")
             self.floor = 0
             self.click_position([1530, 990])
             time.sleep(1)
@@ -296,7 +334,7 @@ class DivergentUniverse(UniverseUtils):
             if i[:prefix] in text:
                 return i
         return None
-    
+
     def test(self):
         self.find_team_member()
 
@@ -345,6 +383,9 @@ class DivergentUniverse(UniverseUtils):
             return None
     
     def find_portal(self, type=None):
+        """return portal as dict like {'score':0,'nums':0,'type':''}, the score, amount and typ of detected portals."""
+        # TODO: filter normal portal info to avoid log spamming. Just disable all for now.
+        # log.info(f"Entering find_portal(type={type}), tmp disable printing details.", stacklevel=2)
         prefer_portal = {'奖励':3, '事件':3, '战斗':2, '遭遇':2, '商店':1, '财富':1}
         if self.speed:
             prefer_portal = {'商店':3, '财富':3, '奖励':2, '事件':2, '战斗':1, '遭遇':1}
@@ -354,6 +395,7 @@ class DivergentUniverse(UniverseUtils):
             prefer_portal.update(config.portal_prior)
         prefer_portal.update({'首领':4, '休整':4})
         tm = time.time()
+        # text is a list of dict of {'raw_text': str, 'box': [x1, x2, y1, y2], 'score': float}
         text = self.ts.find_with_box([0,1920,0,540], forward=1, mode=2)
         portal = {'score':0,'nums':0,'type':''}
         for i in text:
@@ -369,17 +411,18 @@ class DivergentUniverse(UniverseUtils):
                         portal['nums'] = i['nums']
         ocr_time = time.time() - tm
         self.ocr_time_list = self.ocr_time_list[-5:] + [ocr_time]
-        print(f'识别时间:{int(ocr_time*1000)}ms', text, portal)
+        # print(f'识别时间:{int(ocr_time*1000)}ms', text, portal)
         return portal
-    
-    def sleep(self, tm=2):
+
+    def sleep(self, tm: float = 2.0):
         time.sleep(tm)
         self.ts.forward(self.get_screen())
-        
+
     def portal_bias(self, portal):
         return (portal['box'][0] + portal['box'][1]) // 2 - 950
-    
+
     def aim_portal(self, portal):
+        log.info(f"Entering aim_portal(portal={portal}).", stacklevel=2)
         zero = bisect.bisect_left(config.angles, 0)
         # win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 0, int(-200 * self.multi * self.scale))
         while abs(self.portal_bias(portal)) > 50:
@@ -397,7 +440,12 @@ class DivergentUniverse(UniverseUtils):
             portal = portal_after
         return portal
     
-    def forward_until(self, text_list=[], timeout=5, moving=0, chaos=0):
+    def forward_until(self, text_list=[], timeout: float = 5, moving=0, chaos=0):
+        """Move forward until "f" is found in text_list or timeout. If "f" is found, press "F" and return 1, otherwise return 0.
+        moving: bool, whether a moving key is pressed down already.
+        chaos: bool, whether "F" should be pressed when "f" is detected in ['混沌', '战利品'].
+        """
+        log.debug(f"Entering forward_until(text_list={text_list}, timeout={timeout}, moving={moving}, chaos={chaos})")
         tm = time.time()
         if not moving:
             keyops.keyDown('w')
@@ -428,17 +476,24 @@ class DivergentUniverse(UniverseUtils):
                     for _ in range(1):
                         self.press('s',0.2)
                         self.press('f')
-                    return 1
+                    return True
                 else:
                     tm += 0.7
                     keyops.keyDown('w')
                     time.sleep(0.5)
         keyops.keyUp('w')
-        return 0
+        return False
 
     # 这个方法是通过本层么?
+    # TODO: understand. Now aimed is always 0, static is always 1.
+    # This method does not return whether the portal is successfully passed or not.
     def portal_opening_days(self, aimed=0, static=0, deep=0):
+        log.info(f"Entering portal_opening_days(aimed={aimed}, static={static}, deep={deep}), "\
+                 f"floor={self.floor}, portal_cnt={self.portal_cnt}", stacklevel=2)
+        # In rare case deep=2, which will be counted as one failure.
+        # fail_count determines whether to End and Finalize or just Leave for Now.
         if deep > 1:
+            log.debug(f"fail_count: {self.fail_count}, exiting...")
             self.close_and_exit(click = self.fail_count > 1)
             self.fail_count += 1
             return
@@ -449,11 +504,13 @@ class DivergentUniverse(UniverseUtils):
         if static:
             # win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 0, int(100 * self.multi * self.scale))
             angles = [0, 90, 90, 90, 45, -90, -90, -90, -45]
+            log.info("Searching 8 directions for portal...")
             for i,angle in enumerate(angles):
                 self.mouse_move(angle)
                 time.sleep(0.2)
                 portal = self.find_portal()
                 if portal['score']:
+                    log.info(f"Found portal: {portal}")
                     break
             if self.floor in [1,2,4,5,6,7,9,10]:
                 if portal['nums'] == 1 and portal['score'] < 2:
@@ -464,6 +521,7 @@ class DivergentUniverse(UniverseUtils):
                         self.mouse_move(angles[i])
                         bias += angles[i]
                         time.sleep(0.2)
+                        log.debug(f"portal_after search, angle={angles[i]}, i={i}, bias={bias}")
                         portal_after = self.find_portal()
                         if portal_after['score'] and portal_type != portal_after['type']:
                             portal = portal_after
@@ -472,6 +530,8 @@ class DivergentUniverse(UniverseUtils):
                         portal = portal_pre
                         self.mouse_move(-bias)
         tm = time.time()
+        # TODO: not sure why the timeout is related to the portal score. -ws
+        log.debug("Trying to find portal while moving...")
         while time.time() - tm < 5 + 2 * (portal['score'] != 0):
             if aimed == 0:
                 if portal['score'] == 0:
@@ -609,13 +669,17 @@ class DivergentUniverse(UniverseUtils):
                 self.ts.forward(self.get_screen())
 
     def find_event_text(self, save=0):
+        """return the x position of the rightmost event text, or None if not found."""
         self.get_screen()
         res = self.get_text_position(clean=1)
         res = sorted(res, key=lambda x: x[0])
+        # 去掉右侧状态效果，一般在1915 -ws
+        if len(res) and res[-1][0] > 1700:
+            res.pop()
         if len(res):
             return res[-1][0]
         else:
-            return 0
+            return None
         time.sleep(0.3)
         text = self.ts.find_with_box([300, 1920, 0, 350], forward=1, mode=2)
         res = 0
@@ -668,76 +732,126 @@ class DivergentUniverse(UniverseUtils):
             elif time.time() - in_time > 3:
                 break
     
-    def align_event(self, key, deep=0, event_text=None, click=0):
+    def align_event(self, key, deep=0, event_text: int|None = None, click=0):
         find = 0
+        solved = False
         if deep == 0 and key == 'd' and (event_text is None or event_text != 950):
             # win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 0, int(-200 * self.multi * self.scale))
-            event_text = self.find_event_text(1)
-            if not event_text:
-                self.press('s', 1)
-            else:
+            
+            # 暂时注掉不再重新识别，以避免右侧状态效果误导。 -ws
+        #     event_text = self.find_event_text(1)
+        #     if not event_text:
+        #         self.press('s', 1)
+        #     else:
+        #         find = 1
+        # if not find and not event_text:
+        #     event_text = self.find_event_text(1)
+        
+            tmp_event_text = self.find_event_text(1)
+            if tmp_event_text is not None:
+                event_text = tmp_event_text
                 find = 1
+            else:
+                # 回头一步
+                self.press('s', 1)
         if not find and not event_text:
-            event_text = self.find_event_text(1)
+            tmp_event_text = self.find_event_text(1)
+            if tmp_event_text is not None:
+                event_text = tmp_event_text
         self.get_screen()
         if self.check_f(is_in=['事件','奖励','遭遇','交易']):
             self.press('f')
-            return
+            return True
 
-        if not event_text:
-            event_text = 950
+        # if not event_text:
+        #     # If event_text is not found, we assume it is at the center of the screen.
+        #     event_text = 950
         if event_text and event_text < 910 and key == 'd':
             key = 'a'
 
         log.info(f"align_event: {event_text}, key: {key}")
 
-        # Calculate how much the character needs to move horizontally based on the position of the event text  -ws
-        if event_text:
-            if abs(950-event_text) >= 50:
-                self.press(key,0.2)
-            event_text_after = self.find_event_text()
-            if event_text_after:
-                # sub: displacement of the event text after moving attempt  -ws
-                sub = event_text - event_text_after
-                if key == 'a':
-                    sub = -sub
-                print('sub:', sub)
-                log.info(f"event_text_after: {event_text_after}, sub: {sub}")
-            else:
-                sub = 100000
+        if not event_text:
+            # TODO: It should be impossible to enter this branch. Just leave it here for later confirmation. -ws
+            log.error(f"event_text={event_text}. 没识别到有效事件，放弃对齐。If you see this line, report to the developer.")
+            return False
+            # if deep < 3:
+            #     self.press('w',[0,0.3,0.5][deep])
+            #     solved = self.align_event(key, deep+1)
+            # return solved
 
-            if sub < 60:
-                sub = 100
-            # sub: now it means the calculated # of small steps to move, should use a new name instead -ws
-            if sub < 400:
-                sub = int((event_text_after - 950) / sub)
-                sub = min(3, max(-3, int(sub)))
-            else:
-                sub = 2
-
-            if abs(950-event_text) < 50:
-                sub = 0
-            # reduce the press time from 0.2s to 0.10s to compensate for the delay on my computer -ws
-            for _ in range(sub):
-                self.press('d',0.10)
-                time.sleep(0.1)
-
-            for _ in range(-sub):
-                self.press('a',0.10)
-                time.sleep(0.1)
-
-            if click:
-                pyautogui.click()
-                self.check_pop()
-
-            self.forward_until(['事件','奖励','遭遇','交易'], timeout=2.5, moving=0, chaos=1)
-
+        # Calculate how much the character needs to move laterally based on the position of the event text  -ws
+        # if event_text exists
+        # 试探性左/右平移
+        if abs(950-event_text) >= 50:
+            self.press(key,0.2)
+        # 重新识别，风险有，当有多个事件时，可能event_text是其中一个事件，event_text_after重新识别到的是另一个事件，导致距离计算错误 -ws
+        # 还可能无法识别到有效事件。
+        # event_text_after = self.find_event_text()
+        event_text_after = self.find_event_text(1)
+        if event_text_after is None:
+            # 无法识别到event_text_after时，假设步长。
+            step_size = 10000 if key == 'd' else -10000
+            event_text_after = event_text
         else:
-            if deep < 4: # increase to 4 from 3, add one more attempt -ws
-                self.press('w',[0,0.3,0.5][deep])
-                self.align_event(key, deep+1)
-            return
-            
+            # sub: displacement of the event text after moving attempt  -ws
+            step_size = event_text - event_text_after
+        if key == 'a':
+            step_size = -step_size # so that step_size is always positive
+        log.info(f"重新截图识别，event_text_after: {event_text_after}, step_size: {step_size}")
+        if step_size < 60:
+            step_size = 100
+        # sub: now it means the calculated # of small steps to move, should use a new name instead -ws
+        if step_size < 400:
+            n_steps = int((event_text_after - 950) / step_size)
+            n_steps = min(3, max(-3, int(n_steps)))
+        else:
+            n_steps = 2 if key == 'd' else -2
+
+        if abs(950-event_text) < 50:
+            n_steps = 0
+
+        # reduce the press time from 0.2s to 0.10s to compensate for the delay on my computer -ws
+        for _ in range(n_steps):
+            self.press('d',0.10)
+            time.sleep(0.1)
+
+        for _ in range(-n_steps):
+            self.press('a',0.10)
+            time.sleep(0.1)
+        
+        # # 为解决事件不对应，上个傻瓜方案，持续监测与目标的水平距离 -ws
+        # def move_lateral_to_target(target_x):
+        #     """Move laterally to align with the target x position."""
+        #     if target_x < 950 - 50:
+        #         self.press('a',0.1)
+        #         time.sleep(0.1)
+        #     elif target_x > 950 + 50:
+        #         self.press('d',0.1)
+        #         time.sleep(0.1)
+        # t0 = time.time()
+        # while time.time() - t0 < 5.0:
+        #     event_text_new = self.find_event_text(1)
+        #     log.info(f"event now at: {event_text_new}, time elapsed: {time.time() - t0:.2f}s")
+        #     if event_text_new ==0:
+        #         # tmp solution. May replace the whole pathfinding with a better solution. -ws
+        #         log.warning("事件文字可能被遮挡，凭记忆朝目标移动。")
+        #         move_lateral_to_target(event_text)
+        #         self.press('w', 0.1)
+        #         time.sleep(0.1)
+        #     elif abs(event_text_new - 950) > 50:
+        #         move_lateral_to_target(event_text_new)
+        #         event_text = event_text_new
+        #     else:
+        #         log.info("事件文字已对齐，停止横向移动。")
+        #         break
+        if click:
+            pyautogui.click()
+            log.info("Clicked.")
+            self.check_pop()
+
+        return self.forward_until(['事件','奖励','遭遇','交易'], timeout=2.9, moving=0, chaos=1)
+
     def skill(self, quan=0):
         if not self.allow_e:
             return
@@ -758,6 +872,7 @@ class DivergentUniverse(UniverseUtils):
             time.sleep(2.5)
 
     def area(self):
+        log.info("Entering area()")
         area_now = self.get_now_area()
         time.sleep(0.5)
         if self.get_now_area() != area_now or area_now is None:
@@ -837,6 +952,7 @@ class DivergentUniverse(UniverseUtils):
 
         if self.portal_cnt > 1:
             # 这里考虑的是全局异常暂离次数达到2次,就结束本次探索,或许可以考虑改为单个区域
+            # 并非如此，init_floor()会重置portal_cnt，portal_cnt影响的是每层搜索几次portal。 -ws
             self.close_and_exit(click = False)
             return 1
         
@@ -856,54 +972,71 @@ class DivergentUniverse(UniverseUtils):
             # 基本思想是前进,监视中间区域出现汉字,确定事件数量,分为单和双逻辑进行寻路
             # 如果是单事件,一直前进,然后寻找F
             # 如果是双事件,优先右侧事件,然后再左侧事件
-            # In certain circumstances, theres may also be three events. -ws
-
-
+            # With certain artifacts, there may be three events. -ws
+            # Different events have slightly different depth, so may not be able to notice all events at the first place.
+            # Limitations:
+            # This approach follows a fixed W-A/D/-W route.
+            # In certain cases, there may be obstacles blocking the route, and cannot be removed by click attack, e.g., a lottery machine. 8/11/2025
+            # Alternative approach to go to events could be like going to the portal, by aiming, turning, and going forward.
+            time.sleep(1.0)
             if self.area_state==0:
                 keyops.keyDown('w')
                 tm = time.time()
-                self.get_screen()
-                self.get_text_position()
+                # self.get_screen()
+                # self.get_text_position()
                 total_events = None
 
                 while time.time() - tm < 15:
                     self.get_screen()
-                    res = self.get_text_position()
+                    # res = self.get_text_position()
+                    res = self.get_text_position(1)
                     if res:
                         keyops.keyUp('w')
+                        # log.info(f"初步找到 文字 at {res}")
                         # In some cases, need to go back a little bit to avoid missing the text. But there is also a map with downstairs where turning back would occlude the text. -ws
-                        # self.press('s', 0.05) 
-                        log.info(f"初步找到 文字 at {res}，回头一下")
-                        time.sleep(0.5)
-                        self.get_screen()
-                        # res and total_events are all text_positions, one tmp one official. That is really bad naming. -ws
-                        total_events = self.get_text_position(1)
-                        if len(total_events) and total_events[0][0] < 1600:
+                        # self.press('s', 0.05)
+                        # time.sleep(0.5)
+                        # log.info(f"回头一下")
+                        # # res and total_events are all text_positions, one tmp one official. -ws
+                        # self.get_screen()
+                        # total_events = self.get_text_position(1)
+                        total_events = res
+                        if total_events and total_events[0][0] < 1700:
                             # 有时候会锁定到右边的状态效果那个字
-                            log.info(f"再次使用 clean mask 找到文字，而且不是右侧的状态效果。具体位置 {total_events}")
+                            log.info(f"使用 clean mask 找到文字，而且不是右侧的状态效果。具体位置 {total_events}。")
                             break
                         else:
                             keyops.keyDown('w')
                             time.sleep(1)
                             tm += 1.5
-                            if len(total_events) ==0:
-                                log.info(f"再次使用 clean mask 未找到文字。")
+                            if total_events:
+                                log.info(f"使用 clean mask 找到文字，但是是右侧>1600的状态效果。 具体位置 {total_events}。继续寻找...")
                             else:
-                                log.info(f"再次使用 clean mask 找到文字，但是是右侧>1600的状态效果。 具体位置 {res}")
+                                log.info("使用 clean mask 未找到文字。(不可能发生)")
+                    # May rewrite this part, WIP
+                    # res = self.find_event_text(1)
+                    # if res is not None:
+                    #     log.info(f"使用 clean mask 找到文字，而且不是右侧的状态效果。具体位置 {total_events}。")
+                    #     break
+
 
                 keyops.keyUp('w')
                 if total_events is None:
                     self.close_and_exit()
                     return 1
-                # log.info(f"total_events step: {total_events}")
                 
                 if not total_events or not (933 <= total_events[0][0] <= 972):
+                # if not total_events:
+                    # 如果没有找到事件文字,或者事件文字不在中央950±22范围内，说明可能没看全，尝试再次寻找。 -ws
+                    log.debug(f"total_events: {total_events}，尝试抬头进一步寻找事件文字。")
                     win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 0, int(-100 * self.multi * self.scale))
                     time.sleep(0.3)
                     self.get_screen()
                     total_events_after = self.get_text_position(1)
                     if len(total_events_after) <= 2 and len(total_events_after) >= len(total_events):
+                        # TODO: understand the situation. -ws
                         total_events = total_events_after
+                        log.debug(f"采用新结果: {total_events_after}。")
                     else:
                         win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 0, int(100 * self.multi * self.scale))
 
@@ -914,17 +1047,22 @@ class DivergentUniverse(UniverseUtils):
                 if not total_events:
                     total_events = [(950, 0)]
 
+                log.info("area portal search.")
                 portal = self.find_portal()
-                log.info(f"portal_detail: {portal['nums']}")
-                log.info(f"area_state_update: {self.area_state}")
+                log.info(f"portal found: {portal['nums']}, area_state_update: {self.area_state}")
+                # log.info(f"area_state_update: {self.area_state}")
 
                 if portal['nums'] > 0:
                     self.area_state = 2
                 else:
-                    log.info('对齐中...')
-                    self.align_event('d', event_text=total_events[-1][0], click=1)
+                    log.info(f'对齐事件{total_events}中...')
+                    # align to the last(right most) event.
+                    # The click=True is to solve potential obstacles blocking the route, like a breakable.
+                    # Unnecessary click may cause unwanted lateral displacement. Using a char with small attack-displacement mitigates it. -ws
+                    # TODO: may achieve on-demand click. May overhaul this. It must succeed 100% to avoid stuck.
+                    self.event_solved = self.align_event('d', event_text=total_events[-1][0], click=True)
                     self.area_state += 1 + (len(total_events) == 1)
-                    log.info(f"对齐完成, area_state: {self.area_state}")
+                    log.info(f"对齐完成, event_solved?: {self.event_solved}, area_state: {self.area_state}")
 
             elif self.area_state==1:
                 self.keys.fff = 1
@@ -997,7 +1135,7 @@ class DivergentUniverse(UniverseUtils):
                 self.portal_opening_days(static=1)
 
         elif area_now == '战斗':
-            # 最新的地图中，战斗类型的区域也可能出现事件框，而不是地图放怪的形式。
+            # 最新的地图中，战斗类型的区域也可能出现事件框，而不是地图放怪的形式。-ws
 
             # 如果大黑塔秘技使能,先使用秘技,前面应该已经切换到了大黑塔
             if self.da_hei_ta and self.allow_e and not self.da_hei_ta_effecting:
@@ -1106,6 +1244,7 @@ class DivergentUniverse(UniverseUtils):
         time.sleep(1)
 
     def end_of_uni(self):
+        self.last_fail_floor = 0
         self.update_count(0)
         self.my_cnt += 1
         tm = int((time.time() - self.init_tm) / 60)
@@ -1188,7 +1327,7 @@ class DivergentUniverse(UniverseUtils):
         except:
             pass
         self._stop = True
-    
+
     def on_key_press(self, event):
         if event.name == "f8":
             print("F8 已被按下，尝试停止运行")
@@ -1199,6 +1338,7 @@ class DivergentUniverse(UniverseUtils):
         keyboard.on_press(self.on_key_press)
         self.keys = KeyController(self)
         try:
+            # The main loop of the program
             self.route()
         except KeyboardInterrupt:
             print("KeyboardInterrupt")

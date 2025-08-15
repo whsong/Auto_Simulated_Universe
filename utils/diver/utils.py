@@ -176,7 +176,7 @@ class UniverseUtils:
 
     def press(self, c, t: float = 0):
         if c not in "3r":
-            log.debug(f"按下按钮 {c}，等待 {t} 秒后释放")
+            log.debug(f"按下按钮 {c}，等待 {t} 秒后释放", stacklevel=2)
         if c=='e' and self.allow_e==0:
             return
         if self.slow and c=='shift':
@@ -1627,7 +1627,7 @@ class UniverseUtils:
             if not self.check("choose_bless", 0.9266, 0.9491, threshold=0.945):
                 return
 
-    def get_text_position(self, clean=0):
+    def get_text_position(self, clean: int = 0) -> list[tuple[int, int]]:
         """return the center position of pieces of texts in the screen, as a list of tuples (x,y)"""
         if self.event_mask is None:
             self.event_mask = (cv.imread('imgs/divergent/event_mask.jpg', cv.IMREAD_GRAYSCALE) > 70)[:497]

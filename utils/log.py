@@ -7,8 +7,8 @@ from logging import (
     FileHandler,
     Formatter,
     basicConfig,
-    INFO,
     DEBUG,
+    INFO,
     CRITICAL,
 )
 from pathlib import Path
@@ -22,7 +22,7 @@ current_time_str = datetime.now().strftime("%Y-%m-%d-%H-%M")
 log = getLogger()
 log.setLevel(INFO)
 
-logging_format = "%(levelname)s [%(asctime)s] [%(filename)s:%(lineno)d] %(message)s"
+logging_format = "%(levelname)s [%(asctime)s] [%(filename)s:%(lineno)d:%(funcName)s] %(message)s"
 formatter = Formatter(logging_format)
 
 stream_handler = StreamHandler()
@@ -43,7 +43,7 @@ flet.setLevel(CRITICAL)
 flet_core = getLogger("flet_core")
 flet_core.setLevel(CRITICAL)
 
-basicConfig(level=INFO)
+basicConfig(encoding='utf-8', level=INFO)
 
 def set_debug(debug: bool = False):
     log.setLevel(DEBUG if debug else INFO)
@@ -51,7 +51,7 @@ def set_debug(debug: bool = False):
 set_debug()
 
 def my_print(*args, **kwargs):
-    log.info(" ".join(map(str, args)))
+    log.info(" ".join(map(str, args)), stacklevel=2)
     if len(kwargs):
         print(*args, **kwargs)
 
